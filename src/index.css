@@ -1,0 +1,178 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Immersive Background Colors */
+  --bg-primary: #0f0a1e;
+  --bg-gradient-start: #0f172a;
+  /* slate-900 */
+  --bg-gradient-mid: #581c87;
+  /* purple-900 */
+  --bg-gradient-end: #312e81;
+  /* indigo-900 */
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  /* Deep Immersion Gradient Global */
+  background: linear-gradient(135deg, #0f172a, #581c87, #312e81);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.5);
+}
+
+/* Utility classes */
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-indigo-400;
+  }
+
+  .bg-glass {
+    @apply bg-white/10 backdrop-blur-md;
+  }
+
+  .bg-glass-dark {
+    @apply bg-slate-900/80 backdrop-blur-md;
+  }
+
+  /* Immersive dark background - use on containers that need the theme */
+  .bg-immersive {
+    background: linear-gradient(135deg, #0f172a, #581c87, #312e81);
+  }
+
+  /* Glassmorphism card for dark backgrounds */
+  .glass-card {
+    @apply backdrop-blur-md rounded-2xl;
+    background-color: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Holographic glow effect for avatars */
+  .holographic-glow {
+    box-shadow:
+      0 0 15px rgba(0, 255, 255, 0.4),
+      0 0 30px rgba(139, 92, 246, 0.3),
+      inset 0 0 10px rgba(255, 255, 255, 0.1);
+  }
+
+  .holographic-border {
+    border: 2px solid rgba(0, 255, 255, 0.5);
+    position: relative;
+  }
+
+  .holographic-border::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: inherit;
+    background: linear-gradient(45deg, rgba(0, 255, 255, 0.5), rgba(139, 92, 246, 0.5), rgba(236, 72, 153, 0.5));
+    z-index: -1;
+    filter: blur(4px);
+    opacity: 0.6;
+  }
+
+  .card-shadow {
+    box-shadow:
+      0 4px 6px -1px rgba(0, 0, 0, 0.1),
+      0 2px 4px -1px rgba(0, 0, 0, 0.06),
+      0 0 0 1px rgba(255, 255, 255, 0.05);
+  }
+
+  .glow-subtle {
+    box-shadow:
+      0 0 20px rgba(139, 92, 246, 0.15),
+      0 0 40px rgba(99, 102, 241, 0.1);
+  }
+
+  /* Neon text glow */
+  .neon-text {
+    text-shadow:
+      0 0 5px rgba(139, 92, 246, 0.5),
+      0 0 10px rgba(139, 92, 246, 0.3),
+      0 0 20px rgba(139, 92, 246, 0.2);
+  }
+}
+
+/* Hide scrollbar for chat area while keeping scroll functionality */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Input focus ring override for dark mode */
+input:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* Prevent iOS zoom on input focus */
+@media screen and (max-width: 768px) {
+
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* Animated orb keyframes for background effects */
+@keyframes float {
+
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-20px) scale(1.05);
+  }
+}
+
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
