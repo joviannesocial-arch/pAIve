@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, ChatSession, SchemaType, type Tool } from '@google/generative-ai';
 import type { CoachPersonality } from '../types';
+import { getPersonaDefinition, formatPersonaPrompt, type PersonaDefinition } from '../lib/personas';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -14,44 +15,52 @@ const genAI = API_KEY ? new GoogleGenerativeAI(API_KEY) : null;
 // gemini-2.0-flash - confirmed available via API
 const MODEL_NAME = 'gemini-2.0-flash';
 
-// ============== DYNAMIC PERSONA SYSTEM PROMPTS ==============
+// ============== USER DOSSIER SYSTEM ==============
 
-const PERSONA_PROMPTS: Record<CoachPersonality, string> = {
-    creative: `You are 'The Creative' - an Innovation Guide.
-**Tone:** Unconventional, enthusiastic, 'What if?' thinking.
-**Style:** Use metaphors (e.g., 'Treat your career like a canvas'). Focus on innovation and design thinking. Be playful and inspiring.
-**DO NOT:** Give boring, linear advice or focus purely on salary. Never be dry or clinical.
-**Key Behavior:** When the user feels stuck, offer a 'Wildcard Option'—a path they haven't thought of. Think outside the box. Propose unconventional career paths that match their passions.`,
+/**
+ * Complete user profile snapshot for AI context injection
+ */
+export interface UserDossier {
+    name: string;
+    age?: string;
+    locationPreference?: string[];
+    currentStatus?: string;
+    goal?: string;
+    resume: {
+        education: Array<{ university: string; degree: string; major: string; startDate?: string; endDate?: string }>;
+        experience: Array<{ company: string; role: string; description?: string; startDate?: string; endDate?: string }>;
+        skills: string[];
+    };
+}
 
-    analyst: `You are 'The Analyst' - a Data Master.
-**Tone:** Precise, objective, data-driven.
-**Style:** Use percentages, probabilities, and market trends. Structure answers in bullet points or pros/cons lists when helpful. Reference real data and statistics.
-**DO NOT:** Use fluffy language, emotional platitudes, or vague encouragement. Never be wishy-washy.
-**Key Behavior:** Always ask for the 'variables' (salary expectations, location preferences, work hours) before solving the equation. Be systematic and thorough in analysis.`,
+/**
+ * Build a structured UserDossier from the profile context
+ */
+function buildUserDossier(userName: string, profile?: UserProfileContext): UserDossier {
+    const displayName = profile?.preferredName || userName || 'Friend';
 
-    commander: `You are 'The Commander' - an Action Leader.
-**Tone:** Direct, bold, results-oriented, slightly strict but supportive.
-**Style:** Short sentences. Imperative verbs ('Do this,' 'Fix that'). Focus on 'High Growth' and 'Winning.' Cut through excuses.
-**DO NOT:** Waffle, apologize, or use hedging language like 'maybe' or 'perhaps.' Never be passive.
-**Key Behavior:** If the user is being passive or indecisive, call them out gently but firmly. Push them to take action NOW. Set deadlines. Demand accountability.`,
-
-    sage: `You are 'The Sage' - a Wisdom Keeper.
-**Tone:** Calm, philosophical, patient, 'The Yoda/Uncle Iroh' vibe.
-**Style:** Focus on long-term fulfillment, mental health, and 'Ikigai' (purpose). Use storytelling and parables when appropriate. Share wisdom.
-**DO NOT:** Rush the user or focus only on short-term money wins. Never be pushy or impatient.
-**Key Behavior:** Ask deep 'Why' questions. 'Why do you want that job? Is it for you, or your parents?' Help them find meaning, not just money.`,
-
-    mix: `You are 'The Pathfinder' - an Adaptive Coach operating in Adaptive Mode.
-**Tone:** Chameleon-like. High EQ (Emotional Intelligence). The 'Cool NPC' vibe.
-**Mechanism:**
-1. **Assess the Input:**
-   - If user is emotional/stressed → Switch to Sage Mode (calm, philosophical)
-   - If user asks for stats/salary/data → Switch to Analyst Mode (precise, data-driven)
-   - If user is lazy/indecisive → Switch to Commander Mode (direct, action-oriented)
-   - If user is exploring/uncertain → Switch to Creative Mode (innovative, possibility-focused)
-2. **Default State:** Friendly, engaging, game-like coaching style.
-**DO NOT:** Stick to one rigid persona if the context changes. Adapt fluidly based on emotional cues.`
-};
+    return {
+        name: displayName,
+        age: profile?.age,
+        locationPreference: profile?.countries,
+        currentStatus: profile?.status,
+        goal: undefined, // Can be populated from onboarding goal if available
+        resume: {
+            education: profile?.education || [],
+            experience: profile?.work?.map(w => ({
+                company: w.company,
+                role: w.role,
+                description: undefined,
+                startDate: w.startDate,
+                endDate: w.endDate
+            })) || [],
+            skills: [
+                ...(profile?.technicalSkills?.map(s => s.name) || []),
+                ...(profile?.personalSkills?.map(s => s.name) || [])
+            ]
+        }
+    };
+}
 
 const BASE_SYSTEM_PROMPT = `You are "The Pathfinder" - an AI Career Coach that combines the wisdom of a seasoned career counselor with the perceptiveness of a thoughtful mentor. You are not just an AI assistant; you are a partner in career discovery.
 
@@ -113,14 +122,42 @@ After they confirm, CALL THE TOOL - don't just say you did it.
 
 Remember: You are their thinking partner, not their answer machine.`;
 
-// Generate complete system prompt with persona injection
-function generateSystemPrompt(personality: CoachPersonality = 'mix'): string {
-    const personaPrompt = PERSONA_PROMPTS[personality] || PERSONA_PROMPTS.mix;
+// ============== DYNAMIC SYSTEM PROMPT GENERATION ==============
+
+/**
+ * Generate the complete system prompt with persona injection and user dossier
+ */
+function generateSystemPrompt(
+    personality: CoachPersonality = 'mix',
+    dossier?: UserDossier
+): string {
+    // Get the high-fidelity persona definition
+    const personaDef: PersonaDefinition = getPersonaDefinition(personality);
+    const personaPrompt = formatPersonaPrompt(personaDef);
+
+    // Build the dossier section if we have user data
+    let dossierSection = '';
+    if (dossier) {
+        dossierSection = `
+## USER DOSSIER (The person you are coaching)
+Name: ${dossier.name}
+${dossier.age ? `Age: ${dossier.age}` : ''}
+${dossier.currentStatus ? `Current Status: ${dossier.currentStatus}` : ''}
+${dossier.locationPreference?.length ? `Target Locations: ${dossier.locationPreference.join(', ')}` : ''}
+${dossier.goal ? `Primary Goal: ${dossier.goal}` : ''}
+
+### Resume Summary
+${JSON.stringify(dossier.resume, null, 2)}
+`;
+    }
 
     return `${BASE_SYSTEM_PROMPT}
 
-## YOUR PERSONALITY & COMMUNICATION STYLE
 ${personaPrompt}
+${dossierSection}
+
+## CRITICAL INSTRUCTION
+Address the user by their name (${dossier?.name || 'Friend'}). Use specific details from their resume (university, past roles, skills) to ground your advice in their reality. Stick strictly to your persona voice and never break character.
 
 ## GENERAL COMMUNICATION GUIDELINES
 - **Empathetic First**: Acknowledge feelings before giving advice
@@ -344,8 +381,11 @@ export async function initializeChat(
             ((userProfile.interests.industries?.length || 0) > 0 ||
                 (userProfile.interests.jobTitles?.length || 0) > 0);
 
-        // Generate dynamic system prompt based on selected personality
-        const systemPrompt = generateSystemPrompt(personality);
+        // Build user dossier for context injection
+        const userDossier = buildUserDossier(userName, userProfile);
+
+        // Generate dynamic system prompt with persona and dossier
+        const systemPrompt = generateSystemPrompt(personality, userDossier);
 
         // Generate initial greeting by sending a hidden context message
         const contextPrompt = `${systemPrompt}
