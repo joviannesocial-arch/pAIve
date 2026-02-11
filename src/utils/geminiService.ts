@@ -1,5 +1,7 @@
 import { GoogleGenerativeAI, ChatSession, SchemaType, type Tool } from '@google/generative-ai';
 import type { CoachPersonality } from '../types';
+import { formatPersonaPrompt } from '../lib/personas';
+import { generateDeepDive } from '../actions/generateDeepDive';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -11,47 +13,33 @@ if (!API_KEY) {
 
 const genAI = API_KEY ? new GoogleGenerativeAI(API_KEY) : null;
 
+// Helper for exponential backoff retries
+async function retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    retries = 3,
+    delay = 1000,
+    backoffFactor = 2
+): Promise<T> {
+    try {
+        return await operation();
+    } catch (error: any) {
+        // Retry on 429 (Too Many Requests) or 503 (Service Unavailable)
+        if (retries > 0 && (error.message?.includes('429') || error.message?.includes('503'))) {
+            console.warn(`[Gemini] Rate limit hit. Retrying in ${delay}ms... (${retries} attempts left)`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return retryWithBackoff(operation, retries - 1, delay * backoffFactor, backoffFactor);
+        }
+        throw error;
+    }
+}
+
 // gemini-2.0-flash - confirmed available via API
 const MODEL_NAME = 'gemini-2.0-flash';
 
 // ============== DYNAMIC PERSONA SYSTEM PROMPTS ==============
 
-const PERSONA_PROMPTS: Record<CoachPersonality, string> = {
-    creative: `You are 'The Creative' - an Innovation Guide.
-**Tone:** Unconventional, enthusiastic, 'What if?' thinking.
-**Style:** Use metaphors (e.g., 'Treat your career like a canvas'). Focus on innovation and design thinking. Be playful and inspiring.
-**DO NOT:** Give boring, linear advice or focus purely on salary. Never be dry or clinical.
-**Key Behavior:** When the user feels stuck, offer a 'Wildcard Option'—a path they haven't thought of. Think outside the box. Propose unconventional career paths that match their passions.`,
-
-    analyst: `You are 'The Analyst' - a Data Master.
-**Tone:** Precise, objective, data-driven.
-**Style:** Use percentages, probabilities, and market trends. Structure answers in bullet points or pros/cons lists when helpful. Reference real data and statistics.
-**DO NOT:** Use fluffy language, emotional platitudes, or vague encouragement. Never be wishy-washy.
-**Key Behavior:** Always ask for the 'variables' (salary expectations, location preferences, work hours) before solving the equation. Be systematic and thorough in analysis.`,
-
-    commander: `You are 'The Commander' - an Action Leader.
-**Tone:** Direct, bold, results-oriented, slightly strict but supportive.
-**Style:** Short sentences. Imperative verbs ('Do this,' 'Fix that'). Focus on 'High Growth' and 'Winning.' Cut through excuses.
-**DO NOT:** Waffle, apologize, or use hedging language like 'maybe' or 'perhaps.' Never be passive.
-**Key Behavior:** If the user is being passive or indecisive, call them out gently but firmly. Push them to take action NOW. Set deadlines. Demand accountability.`,
-
-    sage: `You are 'The Sage' - a Wisdom Keeper.
-**Tone:** Calm, philosophical, patient, 'The Yoda/Uncle Iroh' vibe.
-**Style:** Focus on long-term fulfillment, mental health, and 'Ikigai' (purpose). Use storytelling and parables when appropriate. Share wisdom.
-**DO NOT:** Rush the user or focus only on short-term money wins. Never be pushy or impatient.
-**Key Behavior:** Ask deep 'Why' questions. 'Why do you want that job? Is it for you, or your parents?' Help them find meaning, not just money.`,
-
-    mix: `You are 'The Pathfinder' - an Adaptive Coach operating in Adaptive Mode.
-**Tone:** Chameleon-like. High EQ (Emotional Intelligence). The 'Cool NPC' vibe.
-**Mechanism:**
-1. **Assess the Input:**
-   - If user is emotional/stressed → Switch to Sage Mode (calm, philosophical)
-   - If user asks for stats/salary/data → Switch to Analyst Mode (precise, data-driven)
-   - If user is lazy/indecisive → Switch to Commander Mode (direct, action-oriented)
-   - If user is exploring/uncertain → Switch to Creative Mode (innovative, possibility-focused)
-2. **Default State:** Friendly, engaging, game-like coaching style.
-**DO NOT:** Stick to one rigid persona if the context changes. Adapt fluidly based on emotional cues.`
-};
+// ============== DYNAMIC PERSONA SYSTEM PROMPTS ==============
+// Now imported from src/lib/personas.ts
 
 const BASE_SYSTEM_PROMPT = `You are "The Pathfinder" - an AI Career Coach that combines the wisdom of a seasoned career counselor with the perceptiveness of a thoughtful mentor. You are not just an AI assistant; you are a partner in career discovery.
 
@@ -115,11 +103,10 @@ Remember: You are their thinking partner, not their answer machine.`;
 
 // Generate complete system prompt with persona injection
 function generateSystemPrompt(personality: CoachPersonality = 'mix'): string {
-    const personaPrompt = PERSONA_PROMPTS[personality] || PERSONA_PROMPTS.mix;
+    const personaPrompt = formatPersonaPrompt(personality);
 
     return `${BASE_SYSTEM_PROMPT}
 
-## YOUR PERSONALITY & COMMUNICATION STYLE
 ${personaPrompt}
 
 ## GENERAL COMMUNICATION GUIDELINES
@@ -129,7 +116,15 @@ ${personaPrompt}
 - **Use Analogies**: Connect career concepts to relatable examples
 - **Be Human**: Use contractions, casual language, occasional humor
 - **Concise Responses**: Keep responses to 2-4 sentences unless explaining something complex
-- **Never List Dump**: Don't overwhelm with bullet points or long lists`;
+- **Never List Dump**: Don't overwhelm with bullet points or long lists
+
+## TOOL USAGE RULES
+- If you use the \`getMarketData\` tool, you MUST cite the data it returns. Do not hallucinate numbers.
+
+[TOOL USE PROTOCOL:
+1. If the user asks a simple question (e.g., "What is Google?", "Salary for PM?"), provide a high-level summary first.
+2. THEN, explicitly offer the Deep Dive: "Would you like a strategic deep dive into their interview process, financial health, or recent challenges?"
+3. ONLY call the \`getMarketData\` tool if the user explicitly agrees (e.g., "Yes", "Sure", "Do it").]`;
 }
 
 
@@ -171,6 +166,38 @@ const CAREER_COACH_TOOLS: Tool[] = [
                         }
                     },
                     required: ["summary"]
+                }
+            },
+            {
+                name: "getMarketData",
+                description: "Fetches real-time salary, job demand, and trend data. Use this WHENEVER the user asks about specific roles, industries, or salaries.",
+                parameters: {
+                    type: SchemaType.OBJECT,
+                    properties: {
+                        query: {
+                            type: SchemaType.STRING,
+                            description: "The specific query to search for (e.g., 'Salary for React Developers in 2026', 'Future of UX Design')"
+                        }
+                    },
+                    required: ["query"]
+                }
+            },
+            {
+                name: "analyzeCareerFit",
+                description: "Analyzes the user's resume against a target role. Use this when the user uploads a CV or asks 'Am I a good fit?'",
+                parameters: {
+                    type: SchemaType.OBJECT,
+                    properties: {
+                        targetRole: {
+                            type: SchemaType.STRING,
+                            description: "The specific role or job title the user wants to be analyzed for (e.g., 'Senior Product Manager', 'React Developer')"
+                        },
+                        userSkills: {
+                            type: SchemaType.STRING,
+                            description: "A summary or list of the user's key skills and experience context"
+                        }
+                    },
+                    required: ["targetRole", "userSkills"]
                 }
             }
         ]
@@ -421,6 +448,125 @@ export async function sendChatMessage(message: string): Promise<string> {
                             },
                             message: 'Report generation triggered'
                         });
+                    } else if (name === 'getMarketData') {
+                        if (toolCallCallback) {
+                            toolCallCallback({
+                                toolName: name,
+                                success: true,
+                                message: 'Fetching real-time market data...'
+                            });
+                        }
+
+                        const query = (argsObj?.query as string) || '';
+                        console.log(`[Gemini] Calling generateDeepDive with query: ${query}`);
+
+                        try {
+                            const report = await generateDeepDive(query);
+
+                            const functionResponse = await chatSession.sendMessage([{
+                                functionResponse: {
+                                    name,
+                                    response: { success: true, content: report }
+                                }
+                            }]);
+
+                            const textResponse = functionResponse.response.text();
+
+                            chatHistory.push(
+                                { role: 'user', parts: [{ text: message }] },
+                                { role: 'model', parts: [{ text: textResponse }] }
+                            );
+
+                            return textResponse;
+                        } catch (err) {
+                            console.error('[Gemini] Deep dive failed:', err);
+                            const functionResponse = await chatSession.sendMessage([{
+                                functionResponse: {
+                                    name,
+                                    response: { success: false, error: 'Failed to fetch market data.' }
+                                }
+                            }]);
+                            const textResponse = functionResponse.response.text();
+
+                            chatHistory.push(
+                                { role: 'user', parts: [{ text: message }] },
+                                { role: 'model', parts: [{ text: textResponse }] }
+                            );
+
+                            return textResponse;
+                        }
+                    } else if (name === 'analyzeCareerFit') {
+                        if (toolCallCallback) {
+                            toolCallCallback({
+                                toolName: name,
+                                success: true,
+                                message: 'Analyzing career fit...'
+                            });
+                        }
+
+                        const targetRole = (argsObj?.targetRole as string) || '';
+                        const userSkills = (argsObj?.userSkills as string) || '';
+                        console.log(`[Gemini] Analyzing fit for ${targetRole}`);
+
+                        try {
+                            if (!genAI) throw new Error('Gemini API not configured');
+                            const model = genAI.getGenerativeModel({ model: MODEL_NAME });
+                            const prompt = `
+                            Analyze the career fit for the role of "${targetRole}" based on the following user skills/context: "${userSkills}".
+
+                            Return a JSON object with this exact structure:
+                            {
+                                "matchScore": number (0-100),
+                                "missingSkills": string[],
+                                "strength": string,
+                                "culturalFit": string
+                            }
+                            
+                            Return ONLY the JSON object.
+                            `;
+
+                            const result = await retryWithBackoff(() => model.generateContent(prompt));
+                            const responseText = result.response.text();
+
+                            // Extract JSON from response
+                            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                            if (!jsonMatch) {
+                                throw new Error('Failed to parse analysis result');
+                            }
+                            const analysis = JSON.parse(jsonMatch[0]);
+
+                            const functionResponse = await chatSession.sendMessage([{
+                                functionResponse: {
+                                    name,
+                                    response: { success: true, content: analysis }
+                                }
+                            }]);
+
+                            const textResponse = functionResponse.response.text();
+
+                            chatHistory.push(
+                                { role: 'user', parts: [{ text: message }] },
+                                { role: 'model', parts: [{ text: textResponse }] }
+                            );
+
+                            return textResponse;
+                        } catch (err) {
+                            console.error('[Gemini] Career analysis failed:', err);
+                            const functionResponse = await chatSession.sendMessage([{
+                                functionResponse: {
+                                    name,
+                                    response: { success: false, error: 'Failed to analyze career fit.' }
+                                }
+                            }]);
+                            const textResponse = functionResponse.response.text();
+
+                            chatHistory.push(
+                                { role: 'user', parts: [{ text: message }] },
+                                { role: 'model', parts: [{ text: textResponse }] }
+                            );
+
+                            return textResponse;
+                        }
                     }
                 }
 
@@ -509,7 +655,7 @@ Return this EXACT JSON structure:
     "website": "..."
 }`;
 
-        const result = await model.generateContent(prompt);
+        const result = await retryWithBackoff(() => model.generateContent(prompt));
         const responseText = result.response.text();
 
         // Extract JSON from response (in case it includes markdown code blocks)

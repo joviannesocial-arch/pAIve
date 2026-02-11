@@ -1,6 +1,8 @@
 import { motion } from 'framer-motion';
 import { Volume2, VolumeX } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { ChatMessage as ChatMessageType } from '../../types';
 
 interface MessageBubbleProps {
@@ -162,18 +164,37 @@ export function MessageBubble({
                         : 'bg-white/10 text-white rounded-bl-md shadow-lg'
                         }`}
                 >
-                    <p className="text-[15px] leading-relaxed whitespace-pre-wrap">
-                        {displayedText}
-                        {/* Thin blinking cursor while typing - subtle pulse */}
+                    <div className={`text-[15px] leading-relaxed prose prose-sm max-w-none dark:prose-invert
+                        ${isUser ? 'text-white prose-p:text-white prose-headings:text-white' : 'text-gray-100 prose-p:text-gray-100 prose-headings:text-white'}
+                        prose-headings:font-bold prose-h1:text-xl prose-h2:text-lg
+                        prose-p:leading-relaxed prose-p:my-1
+                        prose-strong:text-white prose-strong:font-bold
+                        prose-ul:list-disc prose-ul:pl-4 prose-ul:my-2
+                        prose-ol:list-decimal prose-ol:pl-4 prose-ol:my-2
+                        prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
+                        prose-code:text-pink-300 prose-code:bg-white/10 prose-code:px-1 prose-code:rounded prose-code:before:content-[''] prose-code:after:content-['']
+                    `}>
+                        <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                                // Custom renderer to ensure links open in new tab
+                                a: ({ node, ...props }) => (
+                                    <a {...props} target="_blank" rel="noopener noreferrer" />
+                                )
+                            }}
+                        >
+                            {displayedText}
+                        </ReactMarkdown>
+                        {/* Thin blinking cursor while typing - appended after markdown content */}
                         {isTyping && !isUser && (
                             <span
-                                className="inline-block w-[2px] h-[1em] bg-cyan-400 ml-0.5 align-middle shadow-[0_0_8px_rgba(34,211,238,0.8)]"
+                                className="inline-block w-[2px] h-[1em] bg-cyan-400 ml-1 align-bottom shadow-[0_0_8px_rgba(34,211,238,0.8)]"
                                 style={{
                                     animation: 'cursorPulse 1s ease-in-out infinite'
                                 }}
                             />
                         )}
-                    </p>
+                    </div>
                 </div>
 
                 {/* TTS button for AI messages - always visible */}

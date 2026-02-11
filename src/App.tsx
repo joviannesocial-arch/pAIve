@@ -5,7 +5,7 @@ import {
     WelcomeScreen,
     CoachSelectionScreen,
     PersonalityScreen,
-    ResponseSpeedScreen,
+
     DataAcquisitionScreen,
     ProfileScreen,
     ChatScreen,
@@ -68,7 +68,7 @@ function App() {
     // Separate avatar (visual) from personality (logic)
     const [selectedAvatar, setSelectedAvatar] = useState<Avatar | null>(null);
     const [selectedPersonality, setSelectedPersonality] = useState<CoachPersonality>('mix');
-    const [responseSpeed, setResponseSpeed] = useState(50);
+    const [responseSpeed] = useState(50);
     const [userData, setUserData] = useState<UserData>({
         name: '',
         age: '',
@@ -136,11 +136,6 @@ function App() {
 
     const handlePersonalitySelect = (personality: CoachPersonality) => {
         setSelectedPersonality(personality);
-        setCurrentScreen('response-speed');
-    };
-
-    const handleResponseSpeedComplete = (speed: number) => {
-        setResponseSpeed(speed);
         setCurrentScreen('data-name');
     };
 
@@ -154,7 +149,7 @@ function App() {
 
     const handleBackFromData = () => {
         if (selectedAvatar) {
-            setCurrentScreen('response-speed');
+            setCurrentScreen('personality-selection');
         } else {
             setCurrentScreen('welcome');
         }
@@ -283,15 +278,7 @@ function App() {
                     />
                 )}
 
-                {currentScreen === 'response-speed' && (
-                    <ResponseSpeedScreen
-                        key="response-speed"
-                        coachName={coachName}
-                        coachAvatarUrl={coachAvatarUrl}
-                        userName={userData.name || 'Jane'}
-                        onComplete={handleResponseSpeedComplete}
-                    />
-                )}
+
 
                 {currentScreen === 'data-name' && (
                     <DataAcquisitionScreen
@@ -356,11 +343,9 @@ function App() {
                         key="edit-coach"
                         currentAvatarId={selectedAvatar?.id || 'aura'}
                         currentPersonality={selectedPersonality}
-                        currentSpeed={responseSpeed}
-                        onSave={(avatar, personality, speed) => {
+                        onSave={(avatar, personality) => {
                             setSelectedAvatar(avatar);
                             setSelectedPersonality(personality);
-                            setResponseSpeed(speed);
                             setCurrentScreen('home');
                         }}
                         onBack={() => setCurrentScreen('home')}
