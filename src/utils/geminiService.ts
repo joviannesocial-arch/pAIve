@@ -1,7 +1,6 @@
 import { GoogleGenerativeAI, ChatSession, SchemaType, type Tool } from '@google/generative-ai';
 import type { CoachPersonality } from '../types';
-import { formatPersonaPrompt } from '../lib/personas';
-import { generateDeepDive } from '../actions/generateDeepDive';
+import { getPersonaDefinition, formatPersonaPrompt, type PersonaDefinition } from '../lib/personas';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
@@ -13,33 +12,55 @@ if (!API_KEY) {
 
 const genAI = API_KEY ? new GoogleGenerativeAI(API_KEY) : null;
 
-// Helper for exponential backoff retries
-async function retryWithBackoff<T>(
-    operation: () => Promise<T>,
-    retries = 3,
-    delay = 1000,
-    backoffFactor = 2
-): Promise<T> {
-    try {
-        return await operation();
-    } catch (error: any) {
-        // Retry on 429 (Too Many Requests) or 503 (Service Unavailable)
-        if (retries > 0 && (error.message?.includes('429') || error.message?.includes('503'))) {
-            console.warn(`[Gemini] Rate limit hit. Retrying in ${delay}ms... (${retries} attempts left)`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return retryWithBackoff(operation, retries - 1, delay * backoffFactor, backoffFactor);
-        }
-        throw error;
-    }
-}
-
 // gemini-2.0-flash - confirmed available via API
 const MODEL_NAME = 'gemini-2.0-flash';
 
-// ============== DYNAMIC PERSONA SYSTEM PROMPTS ==============
+// ============== USER DOSSIER SYSTEM ==============
 
-// ============== DYNAMIC PERSONA SYSTEM PROMPTS ==============
-// Now imported from src/lib/personas.ts
+/**
+ * Complete user profile snapshot for AI context injection
+ */
+export interface UserDossier {
+    name: string;
+    age?: string;
+    locationPreference?: string[];
+    currentStatus?: string;
+    goal?: string;
+    resume: {
+        education: Array<{ university: string; degree: string; major: string; startDate?: string; endDate?: string }>;
+        experience: Array<{ company: string; role: string; description?: string; startDate?: string; endDate?: string }>;
+        skills: string[];
+    };
+}
+
+/**
+ * Build a structured UserDossier from the profile context
+ */
+function buildUserDossier(userName: string, profile?: UserProfileContext): UserDossier {
+    const displayName = profile?.preferredName || userName || 'Friend';
+
+    return {
+        name: displayName,
+        age: profile?.age,
+        locationPreference: profile?.countries,
+        currentStatus: profile?.status,
+        goal: undefined, // Can be populated from onboarding goal if available
+        resume: {
+            education: profile?.education || [],
+            experience: profile?.work?.map(w => ({
+                company: w.company,
+                role: w.role,
+                description: undefined,
+                startDate: w.startDate,
+                endDate: w.endDate
+            })) || [],
+            skills: [
+                ...(profile?.technicalSkills?.map(s => s.name) || []),
+                ...(profile?.personalSkills?.map(s => s.name) || [])
+            ]
+        }
+    };
+}
 
 const BASE_SYSTEM_PROMPT = `You are "The Pathfinder" - an AI Career Coach that combines the wisdom of a seasoned career counselor with the perceptiveness of a thoughtful mentor. You are not just an AI assistant; you are a partner in career discovery.
 
@@ -101,13 +122,42 @@ After they confirm, CALL THE TOOL - don't just say you did it.
 
 Remember: You are their thinking partner, not their answer machine.`;
 
-// Generate complete system prompt with persona injection
-function generateSystemPrompt(personality: CoachPersonality = 'mix'): string {
-    const personaPrompt = formatPersonaPrompt(personality);
+// ============== DYNAMIC SYSTEM PROMPT GENERATION ==============
+
+/**
+ * Generate the complete system prompt with persona injection and user dossier
+ */
+function generateSystemPrompt(
+    personality: CoachPersonality = 'mix',
+    dossier?: UserDossier
+): string {
+    // Get the high-fidelity persona definition
+    const personaDef: PersonaDefinition = getPersonaDefinition(personality);
+    const personaPrompt = formatPersonaPrompt(personaDef);
+
+    // Build the dossier section if we have user data
+    let dossierSection = '';
+    if (dossier) {
+        dossierSection = `
+## USER DOSSIER (The person you are coaching)
+Name: ${dossier.name}
+${dossier.age ? `Age: ${dossier.age}` : ''}
+${dossier.currentStatus ? `Current Status: ${dossier.currentStatus}` : ''}
+${dossier.locationPreference?.length ? `Target Locations: ${dossier.locationPreference.join(', ')}` : ''}
+${dossier.goal ? `Primary Goal: ${dossier.goal}` : ''}
+
+### Resume Summary
+${JSON.stringify(dossier.resume, null, 2)}
+`;
+    }
 
     return `${BASE_SYSTEM_PROMPT}
 
 ${personaPrompt}
+${dossierSection}
+
+## CRITICAL INSTRUCTION
+Address the user by their name (${dossier?.name || 'Friend'}). Use specific details from their resume (university, past roles, skills) to ground your advice in their reality. Stick strictly to your persona voice and never break character.
 
 ## GENERAL COMMUNICATION GUIDELINES
 - **Empathetic First**: Acknowledge feelings before giving advice
@@ -116,15 +166,7 @@ ${personaPrompt}
 - **Use Analogies**: Connect career concepts to relatable examples
 - **Be Human**: Use contractions, casual language, occasional humor
 - **Concise Responses**: Keep responses to 2-4 sentences unless explaining something complex
-- **Never List Dump**: Don't overwhelm with bullet points or long lists
-
-## TOOL USAGE RULES
-- If you use the \`getMarketData\` tool, you MUST cite the data it returns. Do not hallucinate numbers.
-
-[TOOL USE PROTOCOL:
-1. If the user asks a simple question (e.g., "What is Google?", "Salary for PM?"), provide a high-level summary first.
-2. THEN, explicitly offer the Deep Dive: "Would you like a strategic deep dive into their interview process, financial health, or recent challenges?"
-3. ONLY call the \`getMarketData\` tool if the user explicitly agrees (e.g., "Yes", "Sure", "Do it").]`;
+- **Never List Dump**: Don't overwhelm with bullet points or long lists`;
 }
 
 
@@ -166,38 +208,6 @@ const CAREER_COACH_TOOLS: Tool[] = [
                         }
                     },
                     required: ["summary"]
-                }
-            },
-            {
-                name: "getMarketData",
-                description: "Fetches real-time salary, job demand, and trend data. Use this WHENEVER the user asks about specific roles, industries, or salaries.",
-                parameters: {
-                    type: SchemaType.OBJECT,
-                    properties: {
-                        query: {
-                            type: SchemaType.STRING,
-                            description: "The specific query to search for (e.g., 'Salary for React Developers in 2026', 'Future of UX Design')"
-                        }
-                    },
-                    required: ["query"]
-                }
-            },
-            {
-                name: "analyzeCareerFit",
-                description: "Analyzes the user's resume against a target role. Use this when the user uploads a CV or asks 'Am I a good fit?'",
-                parameters: {
-                    type: SchemaType.OBJECT,
-                    properties: {
-                        targetRole: {
-                            type: SchemaType.STRING,
-                            description: "The specific role or job title the user wants to be analyzed for (e.g., 'Senior Product Manager', 'React Developer')"
-                        },
-                        userSkills: {
-                            type: SchemaType.STRING,
-                            description: "A summary or list of the user's key skills and experience context"
-                        }
-                    },
-                    required: ["targetRole", "userSkills"]
                 }
             }
         ]
@@ -371,8 +381,11 @@ export async function initializeChat(
             ((userProfile.interests.industries?.length || 0) > 0 ||
                 (userProfile.interests.jobTitles?.length || 0) > 0);
 
-        // Generate dynamic system prompt based on selected personality
-        const systemPrompt = generateSystemPrompt(personality);
+        // Build user dossier for context injection
+        const userDossier = buildUserDossier(userName, userProfile);
+
+        // Generate dynamic system prompt with persona and dossier
+        const systemPrompt = generateSystemPrompt(personality, userDossier);
 
         // Generate initial greeting by sending a hidden context message
         const contextPrompt = `${systemPrompt}
@@ -448,125 +461,6 @@ export async function sendChatMessage(message: string): Promise<string> {
                             },
                             message: 'Report generation triggered'
                         });
-                    } else if (name === 'getMarketData') {
-                        if (toolCallCallback) {
-                            toolCallCallback({
-                                toolName: name,
-                                success: true,
-                                message: 'Fetching real-time market data...'
-                            });
-                        }
-
-                        const query = (argsObj?.query as string) || '';
-                        console.log(`[Gemini] Calling generateDeepDive with query: ${query}`);
-
-                        try {
-                            const report = await generateDeepDive(query);
-
-                            const functionResponse = await chatSession.sendMessage([{
-                                functionResponse: {
-                                    name,
-                                    response: { success: true, content: report }
-                                }
-                            }]);
-
-                            const textResponse = functionResponse.response.text();
-
-                            chatHistory.push(
-                                { role: 'user', parts: [{ text: message }] },
-                                { role: 'model', parts: [{ text: textResponse }] }
-                            );
-
-                            return textResponse;
-                        } catch (err) {
-                            console.error('[Gemini] Deep dive failed:', err);
-                            const functionResponse = await chatSession.sendMessage([{
-                                functionResponse: {
-                                    name,
-                                    response: { success: false, error: 'Failed to fetch market data.' }
-                                }
-                            }]);
-                            const textResponse = functionResponse.response.text();
-
-                            chatHistory.push(
-                                { role: 'user', parts: [{ text: message }] },
-                                { role: 'model', parts: [{ text: textResponse }] }
-                            );
-
-                            return textResponse;
-                        }
-                    } else if (name === 'analyzeCareerFit') {
-                        if (toolCallCallback) {
-                            toolCallCallback({
-                                toolName: name,
-                                success: true,
-                                message: 'Analyzing career fit...'
-                            });
-                        }
-
-                        const targetRole = (argsObj?.targetRole as string) || '';
-                        const userSkills = (argsObj?.userSkills as string) || '';
-                        console.log(`[Gemini] Analyzing fit for ${targetRole}`);
-
-                        try {
-                            if (!genAI) throw new Error('Gemini API not configured');
-                            const model = genAI.getGenerativeModel({ model: MODEL_NAME });
-                            const prompt = `
-                            Analyze the career fit for the role of "${targetRole}" based on the following user skills/context: "${userSkills}".
-
-                            Return a JSON object with this exact structure:
-                            {
-                                "matchScore": number (0-100),
-                                "missingSkills": string[],
-                                "strength": string,
-                                "culturalFit": string
-                            }
-                            
-                            Return ONLY the JSON object.
-                            `;
-
-                            const result = await retryWithBackoff(() => model.generateContent(prompt));
-                            const responseText = result.response.text();
-
-                            // Extract JSON from response
-                            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-                            if (!jsonMatch) {
-                                throw new Error('Failed to parse analysis result');
-                            }
-                            const analysis = JSON.parse(jsonMatch[0]);
-
-                            const functionResponse = await chatSession.sendMessage([{
-                                functionResponse: {
-                                    name,
-                                    response: { success: true, content: analysis }
-                                }
-                            }]);
-
-                            const textResponse = functionResponse.response.text();
-
-                            chatHistory.push(
-                                { role: 'user', parts: [{ text: message }] },
-                                { role: 'model', parts: [{ text: textResponse }] }
-                            );
-
-                            return textResponse;
-                        } catch (err) {
-                            console.error('[Gemini] Career analysis failed:', err);
-                            const functionResponse = await chatSession.sendMessage([{
-                                functionResponse: {
-                                    name,
-                                    response: { success: false, error: 'Failed to analyze career fit.' }
-                                }
-                            }]);
-                            const textResponse = functionResponse.response.text();
-
-                            chatHistory.push(
-                                { role: 'user', parts: [{ text: message }] },
-                                { role: 'model', parts: [{ text: textResponse }] }
-                            );
-
-                            return textResponse;
-                        }
                     }
                 }
 
@@ -655,7 +549,7 @@ Return this EXACT JSON structure:
     "website": "..."
 }`;
 
-        const result = await retryWithBackoff(() => model.generateContent(prompt));
+        const result = await model.generateContent(prompt);
         const responseText = result.response.text();
 
         // Extract JSON from response (in case it includes markdown code blocks)
