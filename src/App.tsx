@@ -3,7 +3,6 @@ import { AnimatePresence } from 'framer-motion';
 import { DevResetButton } from './components/ui';
 import {
     WelcomeScreen,
-    CoachSelectionScreen,
     PersonalityScreen,
 
     DataAcquisitionScreen,
@@ -14,12 +13,14 @@ import {
     SessionNotesScreen,
     EditCoachScreen,
 } from './screens';
-import type { Avatar } from './screens/CoachSelectionScreen';
+import { AVATARS } from './constants';
+import type { Avatar } from './constants';
 import type { ProfileData } from './screens/ProfileScreen';
 import type { AppScreen, StrategicReport, CoachPersonality, SessionNote, ChatMessage } from './types';
 
 // LocalStorage keys
 const STORAGE_KEY_PROFILE = 'palve_user_profile';
+const STORAGE_KEY_CHAT = 'palve_chat_messages';
 
 // Default coach avatar
 const DEFAULT_AVATAR = 'https://api.dicebear.com/7.x/personas/svg?seed=aura&backgroundColor=8b5cf6';
@@ -29,6 +30,8 @@ interface UserData {
     name: string;
     age: string;
     countries: string[];
+    goal?: string;
+    status?: string;
 }
 
 // Generate session notes from conversation
@@ -66,13 +69,15 @@ function App() {
     const [currentScreen, setCurrentScreen] = useState<AppScreen>('welcome');
 
     // Separate avatar (visual) from personality (logic)
-    const [selectedAvatar, setSelectedAvatar] = useState<Avatar | null>(null);
+    const [selectedAvatar, setSelectedAvatar] = useState<Avatar | null>(AVATARS[0]);
     const [selectedPersonality, setSelectedPersonality] = useState<CoachPersonality>('mix');
     const [responseSpeed] = useState(50);
     const [userData, setUserData] = useState<UserData>({
         name: '',
         age: '',
         countries: [],
+        goal: '',
+        status: '',
     });
 
     // Strategic report & session notes
@@ -97,11 +102,28 @@ function App() {
                 setUserData({
                     name: parsed.name,
                     age: parsed.age,
-                    countries: parsed.countries || []
+                    countries: parsed.countries || [],
+                    status: parsed.status,
                 });
                 console.log('[App] Loaded profile from localStorage:', parsed.name);
             } catch (err) {
                 console.error('[App] Failed to parse saved profile:', err);
+            }
+        }
+
+        const savedChat = localStorage.getItem(STORAGE_KEY_CHAT);
+        if (savedChat) {
+            try {
+                const parsed = JSON.parse(savedChat) as ChatMessage[];
+                // Convert string dates back to Date objects
+                const messagesWithDates = parsed.map(msg => ({
+                    ...msg,
+                    timestamp: new Date(msg.timestamp)
+                }));
+                setChatMessages(messagesWithDates);
+                console.log('[App] Loaded chat history from localStorage:', messagesWithDates.length, 'messages');
+            } catch (err) {
+                console.error('[App] Failed to parse saved chat:', err);
             }
         }
     }, []);
@@ -120,27 +142,27 @@ function App() {
         }
     }, [userProfile]);
 
+    useEffect(() => {
+        if (chatMessages.length > 0) {
+            localStorage.setItem(STORAGE_KEY_CHAT, JSON.stringify(chatMessages));
+        }
+    }, [chatMessages]);
+
     // Get the coach avatar URL
     const coachAvatarUrl = selectedAvatar?.avatarUrl || DEFAULT_AVATAR;
     const coachName = selectedAvatar?.name || 'Aura';
 
     // Navigation handlers
-    const handleCustomize = () => setCurrentScreen('coach-selection');
+    const handleCustomize = () => setCurrentScreen('personality-selection');
     const handleSkip = () => setCurrentScreen('data-name');
     const handleEditCoach = () => setCurrentScreen('edit-coach');
-
-    const handleAvatarSelect = (avatar: Avatar) => {
-        setSelectedAvatar(avatar);
-        setCurrentScreen('personality-selection');
-    };
 
     const handlePersonalitySelect = (personality: CoachPersonality) => {
         setSelectedPersonality(personality);
         setCurrentScreen('data-name');
     };
 
-    const handleBackToWelcome = () => setCurrentScreen('welcome');
-    const handleBackToCoachSelection = () => setCurrentScreen('coach-selection');
+    const handleBackFromPersonality = () => setCurrentScreen('welcome');
 
     const handleDataComplete = (data: UserData) => {
         setUserData(data);
@@ -148,11 +170,7 @@ function App() {
     };
 
     const handleBackFromData = () => {
-        if (selectedAvatar) {
-            setCurrentScreen('personality-selection');
-        } else {
-            setCurrentScreen('welcome');
-        }
+        setCurrentScreen('personality-selection');
     };
 
     const handleProfileSave = (profileData: ProfileData) => {
@@ -161,7 +179,8 @@ function App() {
         setUserData({
             name: profileData.name,
             age: profileData.age,
-            countries: profileData.countries
+            countries: profileData.countries,
+            status: profileData.status
         });
         setCurrentScreen('chat');
     };
@@ -260,21 +279,13 @@ function App() {
                     />
                 )}
 
-                {currentScreen === 'coach-selection' && (
-                    <CoachSelectionScreen
-                        key="coach-selection"
-                        onSelect={handleAvatarSelect}
-                        onBack={handleBackToWelcome}
-                    />
-                )}
-
                 {currentScreen === 'personality-selection' && (
                     <PersonalityScreen
                         key="personality-selection"
                         coachName={coachName}
                         coachAvatarUrl={coachAvatarUrl}
                         onSelect={handlePersonalitySelect}
-                        onBack={handleBackToCoachSelection}
+                        onBack={handleBackFromPersonality}
                     />
                 )}
 

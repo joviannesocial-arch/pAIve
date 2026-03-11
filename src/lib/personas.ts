@@ -88,16 +88,10 @@ export function getPersonaDefinition(personality: CoachPersonality): PersonaDefi
  */
 export function formatPersonaPrompt(persona: PersonaDefinition): string {
     return `
-## YOUR IDENTITY
-${persona.identity}
-
-## YOUR VOICE
-${persona.voice}
-
-## HOW TO ANALYZE RESUMES
-${persona.resumeLens}
-
-## STRICT PROHIBITIONS (Never Do These)
-${persona.antiPatterns}
+## 1. YOUR CURRENT PERSONA (The Actor)
+**Identity:** ${persona.identity}
+**Voice:** ${persona.voice}
+**Resume Analysis Lens:** ${persona.resumeLens}
+**Strict Prohibitions (NEVER do these):** ${persona.antiPatterns}
 `.trim();
 }

@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { TypewriterText } from '../components/ui';
 
 interface DataAcquisitionScreenProps {
-    onComplete: (data: { name: string; age: string; countries: string[] }) => void;
+    onComplete: (data: { name: string; age: string; countries: string[]; goal: string; status: string }) => void;
     onBack: () => void;
     coachAvatarUrl: string;
 }
@@ -104,7 +104,9 @@ export function DataAcquisitionScreen({
             onComplete({
                 name: formData.name,
                 age: formData.age,
-                countries: formData.countries
+                countries: formData.countries,
+                goal: formData.goal,
+                status: formData.status
             });
             return;
         }

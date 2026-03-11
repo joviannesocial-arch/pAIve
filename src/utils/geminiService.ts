@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, ChatSession, SchemaType, type Tool } from '@google/generative-ai';
-import type { CoachPersonality } from '../types';
+import type { CoachPersonality, ChatMessage } from '../types';
 import { getPersonaDefinition, formatPersonaPrompt, type PersonaDefinition } from '../lib/personas';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -36,8 +36,10 @@ export interface UserDossier {
 /**
  * Build a structured UserDossier from the profile context
  */
-function buildUserDossier(userName: string, profile?: UserProfileContext): UserDossier {
-    const displayName = profile?.preferredName || userName || 'Friend';
+export function buildUserDossier(userName: string, profile?: UserProfileContext): UserDossier {
+    // If no preferred name, try to use just the first name of the provided userName
+    const firstPart = userName.split(' ')[0];
+    const displayName = profile?.preferredName || firstPart || 'Friend';
 
     return {
         name: displayName,
@@ -62,65 +64,71 @@ function buildUserDossier(userName: string, profile?: UserProfileContext): UserD
     };
 }
 
-const BASE_SYSTEM_PROMPT = `You are "The Pathfinder" - an AI Career Coach that combines the wisdom of a seasoned career counselor with the perceptiveness of a thoughtful mentor. You are not just an AI assistant; you are a partner in career discovery.
-
-## YOUR MISSION
-Help users discover their "Career DNA" - the unique combination of skills, passions, values, and aspirations that define their ideal career path. You guide those who feel lost, validate those who are exploring, and sharpen the focus of those who know what they want.
+const BASE_SYSTEM_PROMPT = `You are "The Pathfinder" - an AI Career Coach and partner in career discovery. You help users discover their "Career DNA" - the unique combination of skills, passions, values, and aspirations that define their ideal career path.
 
 ## AVAILABLE TOOLS
 You have access to these tools - USE THEM when appropriate:
 
-1. **updateCareerInterests**: Call this when the user confirms or mentions specific industries or job titles they're interested in. Examples:
-   - User says "I'm interested in fintech and healthtech" → call with industries: ["fintech", "healthtech"]
-   - User says "I want to be a product manager or UX designer" → call with job_titles: ["Product Manager", "UX Designer"]
+1. **updateCareerInterests**: Call this when the user confirms or mentions specific industries or job titles they're interested in.
    - ALWAYS ask for confirmation before updating: "I heard you're interested in [X]. Should I add that to your profile?"
 
-2. **offerStrategicReport**: Call this when you have gathered enough information (usually after 5+ meaningful exchanges) and want to offer generating a strategic career report. This does NOT end the conversation - the user can continue chatting after viewing the report.
+2. **offerStrategicReport**: Offers to generate a strategic career report. You MUST NOT call this unless ALL of the following are confirmed:
+   - At least 10 meaningful conversational exchanges have occurred.
+   - You know the user's SPECIFIC target role or industry (not vague phrases like "something different").
+   - You know at least one key blocker, challenge, or concern the user has.
+   - You know their preferred location or work style (remote, on-site, etc.).
+   - You have confirmed any career interests using updateCareerInterests.
+   - Calling this prematurely is a CRITICAL ERROR. The user has not shared enough for you to generate a meaningful plan.
 
-## CONVERSATION PHASES
+After the user confirms an interest, CALL THE TOOL - don't just say you did it. NEVER say "I've updated your profile" without actually calling the updateCareerInterests tool.
 
-### PHASE 1: TRIAGE (Opening)
-Your first question should subtly categorize the user into one of three personas:
-- **Explorer**: Doesn't know what they want. Feels lost, overwhelmed, or undecided.
-- **Sniper**: Knows exactly what they want. Needs help getting there.
-- **Patient**: Somewhere in between. Has some ideas but lacks clarity or confidence.
+## 2. THE DIAGNOSTIC ENGINE (Silently process this before EVERY response)
+<thinking>
+Silently analyse the following parameters:
+1. User Emotional State: [e.g., Stressed, Confused, Ambitious, Defeated, Panicking]
+2. Optimal Coaching Framework: Select ONE based on the emotional state:
+   - [GROW]: If the user is action-oriented, forward-looking, or needs a tangible target.
+   - [OSKAR]: If the user is overwhelmed by a massive problem, stuck, or facing heavy market rejection.
+   - [STEPPA]: If the user expresses deep anxiety, imposter syndrome, or an emotional blockage.
+3. Discrepancy Check (The Intervention Flag): Does the User's CURRENT PERSONA heavily clash with their Emotional State? (e.g., They selected a harsh Commander persona, but are experiencing severe anxiety).
+   - Flag = YES or NO.
+   - If YES, which of our other personas (Creative, Analyst, Commander, Sage) would be better?
+</thinking>
 
-Frame your opening question naturally, something like:
-"I'd love to understand where you are right now. If you had to describe your career direction, would you say you're... still exploring different paths, laser-focused on a specific goal, or somewhere in between?"
+## 3. POLITE INTERVENTION PROTOCOL (Execute ONLY if Flag = YES)
+If you detect a severe clash between the user's emotional state and their chosen persona:
+- Start your response by gently breaking the fourth wall to suggest a temporary persona switch.
+- Speak entirely in the voice of the CURRENTLY selected persona when making this suggestion.
+- Briefly explain logically why a different persona (e.g., The Sage) and framework (e.g., STEPPA) would be more efficient for their current blockage.
+- Ask for permission to switch. Do NOT force it.
+- Attempt to provide a brief, helpful answer to their current prompt anyway, staying in the current persona.
 
-### PHASE 2: DEEP DIVE
-Based on their response, adapt your questioning:
+## 4. ACTIVE COACHING FRAMEWORK (The Engine)
+Based on the <thinking> block, execute ONLY the rules for the selected framework. Ignore the others. Maintain your Persona's tone while executing these steps.
 
-**For Explorers:**
-- Focus on values, interests, and "what energizes you" questions
-- Ask about moments when they felt most alive or engaged
-- Help them identify patterns in what they enjoy
+IF [GROW] IS SELECTED (Best for forward momentum):
+- Do not dwell on the problem.
+- Ask probing questions to define a hyper-specific Goal or establish current Reality.
+- Push the user to generate Options.
 
-**For Snipers:**
-- Skip exploration, focus on execution and obstacles
-- Ask about their timeline, resources, and potential blockers
-- Help them create actionable steps
+IF [OSKAR] IS SELECTED (Best for overwhelm and feeling stuck):
+- Refuse to dissect the size of the problem or the bad economy.
+- Pivot immediately to 'Know-how': Ask the user about past successes, existing skills, and what is *currently* working.
+- Focus purely on solutions and resourcefulness.
 
-**For Patients:**
-- Balance exploration with direction
-- Help them narrow down options and build confidence
-- Validate their existing ideas while expanding their thinking
+IF [STEPPA] IS SELECTED (Best for anxiety, fear, or imposter syndrome):
+- Suspend all action-planning and goal-setting.
+- Address the 'Emotion' and 'Perception' directly.
+- Challenge limiting beliefs before ever asking "what are your next steps?"
 
-### PHASE 3: PROFILE INTEGRATION
-As you learn about the user, proactively use the updateCareerInterests tool:
-"Based on what you've shared, it sounds like [X] is really important to you. Should I add that to your Career Interests? That way, I can give you more tailored guidance."
+## 5. GENERAL COMMUNICATION GUIDELINES
+- Question, Don't Lecture: Ask 1-2 thoughtful questions at a time.
+- Be Human: Use contractions, casual language, occasional humour.
+- Concise Responses: Keep responses to 2-4 sentences.
+- Empathetic First: Acknowledge feelings before giving advice.
 
-After they confirm, CALL THE TOOL - don't just say you did it.
-
-## THINGS TO AVOID
-- Generic advice like "follow your passion" without context
-- Assuming you know what's best for them
-- Being too formal or robotic
-- Asking more than 2 questions at once
-- Jumping to solutions before understanding their situation
-- NEVER say "I've updated your profile" without actually calling the updateCareerInterests tool
-
-Remember: You are their thinking partner, not their answer machine.`;
+## 6. RULE HIERARCHY (CRITICAL)
+If the "General Communication Guidelines" contradict your "CURRENT PERSONA", the Persona ALWAYS wins. (e.g., If the Persona says "Never use emotional language," you must ignore the "Empathetic First" general guideline).`;
 
 // ============== DYNAMIC SYSTEM PROMPT GENERATION ==============
 
@@ -151,22 +159,13 @@ ${JSON.stringify(dossier.resume, null, 2)}
 `;
     }
 
-    return `${BASE_SYSTEM_PROMPT}
+    return `${personaPrompt}
 
-${personaPrompt}
+${BASE_SYSTEM_PROMPT}
 ${dossierSection}
 
 ## CRITICAL INSTRUCTION
-Address the user by their name (${dossier?.name || 'Friend'}). Use specific details from their resume (university, past roles, skills) to ground your advice in their reality. Stick strictly to your persona voice and never break character.
-
-## GENERAL COMMUNICATION GUIDELINES
-- **Empathetic First**: Acknowledge feelings before giving advice
-- **Question, Don't Lecture**: Ask 1-2 thoughtful questions at a time, not more
-- **Validate and Expand**: "That's a great insight. Tell me more about..."
-- **Use Analogies**: Connect career concepts to relatable examples
-- **Be Human**: Use contractions, casual language, occasional humor
-- **Concise Responses**: Keep responses to 2-4 sentences unless explaining something complex
-- **Never List Dump**: Don't overwhelm with bullet points or long lists`;
+Address the user naturally. Use their name (${dossier?.name || 'Friend'}) occasionally to build rapport, but DO NOT start every message with it. Never use it more than once in a single turn. Stick strictly to your persona voice and never break character.`;
 }
 
 
@@ -198,7 +197,7 @@ const CAREER_COACH_TOOLS: Tool[] = [
             },
             {
                 name: "offerStrategicReport",
-                description: "Offers to generate a strategic career report for the user. Call this when you have gathered enough information about their goals, skills, and interests.",
+                description: "Offers to generate a strategic career report. ONLY call this after: (1) minimum 10 meaningful back-and-forth exchanges, (2) knowing the user's specific target role/industry, (3) understanding at least one key blocker or challenge, (4) knowing their preferred location or work style. Calling this too early RUINS the experience.",
                 parameters: {
                     type: SchemaType.OBJECT,
                     properties: {
@@ -373,8 +372,9 @@ export async function initializeChat(
         // Generate profile context
         const profileContext = generateProfileContext(userProfile);
 
-        // Use preferred name if available, otherwise fall back to full name
-        const displayName = userProfile?.preferredName || userName;
+        // Use preferred name if available, otherwise fall back to first name
+        const firstPart = userName.split(' ')[0];
+        const displayName = userProfile?.preferredName || firstPart;
 
         // Check if user has career interests filled in
         const hasCareerInterests = userProfile?.interests &&
@@ -395,9 +395,9 @@ ${profileContext}
 ${!hasCareerInterests ? '\nNOTE: The user has not filled in their Career Interests yet. During the conversation, proactively suggest adding relevant interests to their profile using the updateCareerInterests tool.' : ''}
 
 Generate a warm, personalized greeting (2-3 sentences max) that:
-1. Addresses them by their preferred name (${displayName})
+1. Greets them naturally (you can use their name "${displayName}" if it feels right, but don't force it at the start)
 2. Acknowledges something specific from their background if available
-3. Leads naturally into the triage question about their career direction (Explorer/Sniper/Patient)
+3. Leads naturally into your coaching role.
 
 Don't list their profile. Be natural and conversational.`;
 
@@ -419,11 +419,16 @@ Don't list their profile. Be natural and conversational.`;
 
 export async function sendChatMessage(message: string): Promise<string> {
     if (!chatSession) {
-        throw new Error('Chat not initialized. Call initializeChat first.');
+        // Attempt one-time silent re-initialization if we have history
+        if (chatHistory.length > 0) {
+            console.warn('[Gemini] Chat session lost but history exists. Re-initializing...');
+        }
+        throw new Error('AI session was interrupted. Please try re-sending or refresh if it persists.');
     }
 
     try {
         const result = await chatSession.sendMessage(message);
+        console.log('[Gemini] Received response:', result);
         const response = result.response;
 
         // Check if the model wants to call a function
@@ -494,8 +499,11 @@ export async function sendChatMessage(message: string): Promise<string> {
         );
 
         return textResponse;
-    } catch (error) {
-        console.error('Gemini chat error:', error);
+    } catch (error: any) {
+        console.error('Gemini chat error details:', error);
+        if (error.response) {
+            console.error('Gemini error response:', JSON.stringify(error.response, null, 2));
+        }
         throw error;
     }
 }
@@ -544,7 +552,8 @@ Return this EXACT JSON structure:
     "education": [ { "institution": "...", "degree": "...", "yearStart": "...", "yearEnd": "..." } ],
     "experience": [ { "company": "...", "role": "...", "yearStart": "...", "yearEnd": "...", "description": "..." } ],
     "skills": ["...", "..."],
-    "community": [ { "organization": "...", "role": "...", "description": "..." } ], 
+    "personalSkills": ["...", "..."],
+    "community": [ { "organization": "...", "role": "...", "description": "...", "yearStart": "...", "yearEnd": "..." } ], 
     "languages": [ { "language": "...", "proficiency": "..." } ],
     "website": "..."
 }`;
@@ -583,14 +592,17 @@ Return this EXACT JSON structure:
                 organization: c.organization,
                 role: c.role,
                 description: c.description,
-                startDate: '',
-                endDate: ''
+                startDate: c.yearStart,
+                endDate: c.yearEnd
             })) || [],
             technicalSkills: parsed.skills?.map((s: string) => ({
                 name: s,
                 level: 'intermediate'
             })) || [],
-            personalSkills: [], // Prompt doesn't separate these anymore for simplicity/strictness
+            personalSkills: parsed.personalSkills?.map((s: string) => ({
+                name: s,
+                level: 'intermediate'
+            })) || [],
             languages: parsed.languages?.map((l: any) => ({
                 language: l.language,
                 proficiency: l.proficiency
@@ -605,6 +617,63 @@ Return this EXACT JSON structure:
 
 export function isGeminiConfigured(): boolean {
     return !!genAI;
+}
+
+export function isChatInitialized(): boolean {
+    return !!chatSession;
+}
+
+/**
+ * Silently re-initializes a chat session without sending a new greeting.
+ * Useful for recovering state after HMR or page reloads if history is available.
+ */
+export async function reinitializeChatSession(
+    userName: string,
+    userProfile: UserProfileContext | undefined,
+    existingMessages: ChatMessage[],
+    personality: CoachPersonality = 'mix'
+): Promise<void> {
+    if (!genAI) return;
+
+    const model = genAI.getGenerativeModel({
+        model: MODEL_NAME,
+        tools: CAREER_COACH_TOOLS,
+    });
+
+    const userDossier = buildUserDossier(userName, userProfile);
+    const systemPrompt = generateSystemPrompt(personality, userDossier);
+    const profileContext = generateProfileContext(userProfile);
+
+    // Reconstruct history structure from UI messages
+    if (chatHistory.length === 0 && existingMessages.length > 0) {
+        console.log('[Gemini] Reconstructing history from', existingMessages.length, 'messages');
+        
+        // 1. Add the heavy system context as the first 'user' message
+        const displayName = userProfile?.preferredName || userName.split(' ')[0];
+        
+        const contextPrompt = `${systemPrompt}
+
+The user's name is ${userName}. ${userProfile?.preferredName ? `They prefer to be called "${displayName}".` : ''}
+${profileContext}
+
+Continue the conversation naturally. The user has already seen your greeting.`;
+
+        chatHistory = [{ role: 'user', parts: [{ text: contextPrompt }] }];
+
+        // 2. Map existing messages to history
+        existingMessages.forEach(msg => {
+            chatHistory.push({
+                role: msg.sender === 'ai' ? 'model' : 'user',
+                parts: [{ text: msg.content }]
+            });
+        });
+    }
+
+    chatSession = model.startChat({
+        history: chatHistory,
+    });
+
+    console.log('[Gemini] Chat session re-initialized with history length:', chatHistory.length);
 }
 
 export function getAPIKeyStatus(): string {

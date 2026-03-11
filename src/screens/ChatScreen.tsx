@@ -184,6 +184,14 @@ export function ChatScreen({
             let responseText: string;
 
             if (isGeminiConfigured() && chatInitialized) {
+                // Check if session needs re-initialization (e.g. after HMR)
+                const { isChatInitialized, reinitializeChatSession } = await import('../utils/geminiService');
+                if (!isChatInitialized()) {
+                    console.log('[ChatScreen] Session lost, re-initializing...');
+                    const profileContext = userProfile || { countries: [userLocation] };
+                    await reinitializeChatSession(userName, profileContext, messages);
+                }
+                
                 // Use real Gemini AI
                 responseText = await sendChatMessage(text);
             } else {

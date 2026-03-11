@@ -22,6 +22,7 @@ interface ProfileScreenProps {
         name: string;
         age: string;
         countries: string[];
+        status?: string;
     };
     savedProfile?: ProfileData;  // Full saved profile for re-hydration
     coachAvatarUrl: string;
@@ -112,12 +113,21 @@ export function ProfileScreen({
         if (savedProfile) {
             return savedProfile;
         }
+        // Map status string to UserStatus literal
+        let mappedStatus: UserStatus | undefined = undefined;
+        if (initialData.status) {
+            const s = initialData.status.toLowerCase();
+            if (s.includes('student')) mappedStatus = 'student';
+            else if (s.includes('graduate') || s.includes('fresh')) mappedStatus = 'graduate';
+            else if (s.includes('switch')) mappedStatus = 'career-switcher';
+        }
+
         return {
             name: initialData.name,
-            preferredName: '',
+            preferredName: initialData.name, // Pre-fill with name given to AI
             age: initialData.age,
             countries: initialData.countries || [],
-            status: undefined,
+            status: mappedStatus,
             websites: [],
             education: [{ id: generateId(), university: '', degree: '', major: '' }],
             work: [{ id: generateId(), company: '', role: '', description: '' }],
