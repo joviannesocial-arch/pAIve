@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, ChatSession, SchemaType, type Tool } from '@google/generative-ai';
-import type { CoachPersonality, ChatMessage } from '../types';
+import type { CoachPersonality, ChatMessage, StrategicReport, SessionNote } from '../types';
 import { getPersonaDefinition, formatPersonaPrompt, type PersonaDefinition } from '../lib/personas';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -122,13 +122,14 @@ IF [STEPPA] IS SELECTED (Best for anxiety, fear, or imposter syndrome):
 - Challenge limiting beliefs before ever asking "what are your next steps?"
 
 ## 5. GENERAL COMMUNICATION GUIDELINES
-- Question, Don't Lecture: Ask 1-2 thoughtful questions at a time.
-- Be Human: Use contractions, casual language, occasional humour.
-- Concise Responses: Keep responses to 2-4 sentences.
-- Empathetic First: Acknowledge feelings before giving advice.
+- Question, Don't Lecture: Ask ONLY 1 highly clear, specific, and actionable question at a time. Avoid vague or open-ended questions. Provide context so the user knows exactly how to answer.
+- Ultra-Detailed Responses: When evaluating user input or explaining concepts, be EXTREMELY detailed. Use formatting like Markdown tables, SWOT analysis, bullet points, and industry-level standards where appropriate. Provide massive value in every response.
+- Provide Suggested Replies: Whenever you ask the user a question, you MUST generate 3-4 suggested reply options for them. Format these EXACTLY at the very end of your message as a JSON array inside a suggestions tag, like this:
+  <suggestions>["Option A", "Option B", "Option C"]</suggestions>
+- Be Human: Use contractions, casual language, and occasional humour. Empathize first before giving advice.
 
 ## 6. RULE HIERARCHY (CRITICAL)
-If the "General Communication Guidelines" contradict your "CURRENT PERSONA", the Persona ALWAYS wins. (e.g., If the Persona says "Never use emotional language," you must ignore the "Empathetic First" general guideline).`;
+If the "General Communication Guidelines" contradict your "CURRENT PERSONA", the Persona ALWAYS wins. (e.g., If the Persona says "Never use emotional language," you must ignore the "Empathize first" general guideline).`;
 
 // ============== DYNAMIC SYSTEM PROMPT GENERATION ==============
 
@@ -197,7 +198,7 @@ const CAREER_COACH_TOOLS: Tool[] = [
             },
             {
                 name: "offerStrategicReport",
-                description: "Offers to generate a strategic career report. ONLY call this after: (1) minimum 10 meaningful back-and-forth exchanges, (2) knowing the user's specific target role/industry, (3) understanding at least one key blocker or challenge, (4) knowing their preferred location or work style. Calling this too early RUINS the experience.",
+                description: "Offers to generate a strategic career report. Call this after: (1) minimum 4 meaningful back-and-forth exchanges, (2) knowing the user's general target role/industry, (3) understanding at least one blocker. Do not loop endlessly asking questions if you already have a good grasp of their situation.",
                 parameters: {
                     type: SchemaType.OBJECT,
                     properties: {
@@ -681,4 +682,136 @@ export function getAPIKeyStatus(): string {
         return 'No API key configured';
     }
     return `API key loaded (${API_KEY.substring(0, 10)}...)`;
+}
+
+// ============== REPORT / NOTES GENERATION ==============
+
+export async function generateLiveStrategicReport(
+    messages: ChatMessage[],
+    userProfile?: UserProfileContext
+): Promise<StrategicReport> {
+    if (!genAI) {
+        throw new Error('Gemini API not configured');
+    }
+
+    const model = genAI.getGenerativeModel({
+        model: MODEL_NAME,
+        generationConfig: { responseMimeType: "application/json" }
+    });
+
+    const conversationTranscript = messages.map(m => `${m.sender.toUpperCase()}: ${m.content}`).join('\n\n');
+    
+    // Inject Live LinkedIn Profiles via Tavily
+    let tavilyContext = '';
+    try {
+        const tavilyKey = import.meta.env.VITE_TAVILY_API_KEY || import.meta.env.TAVILY_API_KEY;
+        if (tavilyKey) {
+            const industry = userProfile?.interests?.industries?.[0] || 'Technology';
+            const location = userProfile?.countries?.[0] || 'Singapore';
+            
+            const tavilyResponse = await fetch('https://api.tavily.com/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    api_key: tavilyKey,
+                    query: `site:linkedin.com/in ("${industry}" OR "Director" OR "Manager") "${location}"`,
+                    include_answer: false,
+                    max_results: 3
+                })
+            });
+            if (tavilyResponse.ok) {
+                const searchResult = await tavilyResponse.json();
+                tavilyContext = `\nREAL LINKEDIN PROFILES FOUND OVER THE WEB:\n${JSON.stringify(searchResult.results || [])}\n`;
+            }
+        }
+    } catch (e) {
+        console.error("Tavily search failed silently during report generation", e);
+    }
+
+    const prompt = `You are a world-class Executive Coach and Career Strategist. 
+Analyze the following conversation transcript between you and the user, along with their profile context, and generate a highly detailed, data-driven Strategic Career Report in strict JSON format. 
+The report MUST be accurate, extremely thorough (like a professional consulting firm's output), and directly reflect what was discussed in the transcript provided below.
+
+Profile Context: ${JSON.stringify(userProfile)}
+${tavilyContext}
+
+Conversation Transcript:
+${conversationTranscript}
+
+Return a completely populated JSON object matching this schema EXACTLY:
+{
+  "userName": "string",
+  "recommendedRoles": [
+    {
+      "title": "string",
+      "matchPercentage": "string e.g. '85%'",
+      "salaryRange": "string e.g. '$85,000 - $110,000/year'",
+      "justification": "Detailed explanation of why this role fits their background, strengths, and goals.",
+      "industry": "string",
+      "growthRate": "string e.g. '+22%'"
+    }
+  ],
+  "criticalCertifications": [
+    { "name": "string", "provider": "string", "level": "string e.g. Beginner/Intermediate/Advanced/Expert" }
+  ],
+  "immediateNextSteps": [
+    { "step": 1, "title": "string", "description": "Highly actionable, specific, multi-sentence instruction." }
+  ],
+  "linkedInContacts": [
+    { "name": "Extract REAL Name from Tavily data provided above if available", "email": "Extract REAL LinkedIn URL from Tavily data", "avatarUrl": "https://api.dicebear.com/7.x/avataaars/svg?seed=USE_THEIR_NAME" }
+  ],
+  "careerGrowthData": [
+    { "date": "string e.g. 'Jan 15'", "salary": 85000 } // Provide 8 incremental points of projected salary growth over a conceptual timeline. Use numbers, not strings for salary.
+  ]
+}
+
+Make sure to provide 2-3 specific, highly tailored role recommendations with detailed justifications, and 3-5 immediate next steps that directly execute on what was discussed. DO NOT output code blocks or markdown, just raw JSON.`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    return JSON.parse(text) as StrategicReport;
+}
+
+export async function generateLiveSessionNotes(
+    messages: ChatMessage[],
+    userName: string
+): Promise<SessionNote> {
+    if (!genAI) {
+        throw new Error('Gemini API not configured');
+    }
+
+    const model = genAI.getGenerativeModel({
+        model: MODEL_NAME,
+        generationConfig: { responseMimeType: "application/json" }
+    });
+
+    const conversationTranscript = messages.map(m => `${m.sender.toUpperCase()}: ${m.content}`).join('\n\n');
+
+    const prompt = `You are a world-class Executive Coach summarizing a completed career strategy session.
+Review the following conversation transcript and extract a massive, highly detailed, beautifully formatted meeting note containing all insights, blockers, and agreed-upon action items for the user, ${userName}. 
+It must be elaborate, utilizing Markdown formatting like bolding, tables, and deep analysis. Do not be brief. It must feel like a premium executive summary.
+
+Conversation Transcript:
+${conversationTranscript}
+
+Return a completely populated JSON object matching this schema EXACTLY:
+{
+  "id": "A unique string ID, e.g. 'note-12345'",
+  "date": "an ISO date string of today",
+  "title": "A punchy, professional title for the session",
+  "summary": "A long, massive, highly detailed markdown string containing the full session transcript summary, SWOT analysis, and hyperlinked action items. Use extensive markdown formatting.",
+  "topics": ["Array of string topics discussed"],
+  "insights": ["Array of string insights discovered"],
+  "actionItems": ["Array of string action items to take"]
+}
+
+The "summary" field should be formatted as rich Markdown. Make it incredibly detailed. DO NOT output markdown blocks or code blocks backticks around the json, output raw json.`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    const parsed = JSON.parse(text);
+    return {
+        ...parsed,
+        date: new Date(parsed.date || new Date())
+    } as SessionNote;
 }

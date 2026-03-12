@@ -34,35 +34,7 @@ interface UserData {
     status?: string;
 }
 
-// Generate session notes from conversation
-function generateSessionNotes(
-    userName: string,
-    report?: StrategicReport
-): SessionNote {
-    const topics = ['Career goals', 'Skills assessment', 'Industry preferences'];
-    const insights = [
-        `${userName} shows strong potential for growth in their chosen field`,
-        'Clear understanding of career objectives and willing to develop new skills',
-        'Open to exploring multiple industries and locations'
-    ];
-    const actions = [
-        'Review the strategic report and identify top 3 priorities',
-        'Research recommended certifications and enroll in at least one',
-        'Update LinkedIn profile based on recommendations',
-        'Connect with suggested professionals in the industry'
-    ];
 
-    return {
-        id: Date.now().toString(),
-        date: new Date(),
-        title: 'Career Path Discovery Session',
-        summary: `Today we had a productive discussion about ${userName}'s career aspirations. We explored various industries and roles that align with their skills and interests. The session covered goal setting, skill gap analysis, and actionable next steps for career advancement.`,
-        keyInsights: insights,
-        discussedTopics: topics,
-        actionItems: actions,
-        strategicReport: report
-    };
-}
 
 function App() {
     // Navigation state
@@ -232,10 +204,18 @@ function App() {
 
     const handleGenerateReport = (report: StrategicReport) => {
         setStrategicReport(report);
-        // Also generate and save session notes
-        const note = generateSessionNotes(userData.name || 'User', report);
-        setSessionNotes(prev => [note, ...prev]);
         setCurrentScreen('report');
+        
+        // Asynchronously generate detailed session notes in the background
+        (async () => {
+            try {
+                const { generateLiveSessionNotes } = await import('./utils/geminiService');
+                const note = await generateLiveSessionNotes(chatMessages, userData.name || 'User');
+                setSessionNotes(prev => [note, ...prev]);
+            } catch (err) {
+                console.error("Failed to generate background session notes", err);
+            }
+        })();
     };
 
     const handleViewSessionNote = (noteId: string) => {

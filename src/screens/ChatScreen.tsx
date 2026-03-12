@@ -22,11 +22,7 @@ interface ChatScreenProps {
     onProfileUpdate?: (updates: Partial<ProfileData>) => void;
 }
 
-const quickReplies: QuickReply[] = [
-    { id: '1', label: 'Career change', value: "I'm considering a career change" },
-    { id: '2', label: 'Job search', value: "I need help with my job search strategy" },
-    { id: '3', label: 'Skill gaps', value: "I want to identify my skill gaps" },
-];
+
 
 export function ChatScreen({
     userName,
@@ -43,14 +39,13 @@ export function ChatScreen({
 }: ChatScreenProps) {
     const [isAiTyping, setIsAiTyping] = useState(false);
     const [progress, setProgress] = useState(15);
-    const [conversationState, setConversationState] = useState<ConversationState>(
-        createInitialConversationState(userName)
-    );
     const [isReportReady, setIsReportReady] = useState(false);  // AI signals when ready
     const [chatInitialized, setChatInitialized] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [messageCount, setMessageCount] = useState(messages.length);
+    const [dynamicReplies, setDynamicReplies] = useState<QuickReply[]>([]);
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+    const [isGenerating, setIsGenerating] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const initRef = useRef(false);
 
@@ -161,21 +156,8 @@ export function ChatScreen({
         onMessagesChange(newMessages);
         setMessageCount(prev => prev + 1);
 
-        // Show typing indicator
         setIsAiTyping(true);
         setError(null);
-
-        // Update conversation state for report generation
-        setConversationState(prev => ({
-            ...prev,
-            messageCount: prev.messageCount + 1,
-            collectedData: {
-                ...prev.collectedData,
-                // Extract career-related info from message if mentioned
-                ...(text.toLowerCase().includes('change') && { careerChange: true }),
-                ...(text.toLowerCase().includes('skill') && { skillDevelopment: true }),
-            }
-        }));
 
         try {
             // Typewriter effect is now handled by MessageBubble component
@@ -199,15 +181,36 @@ export function ChatScreen({
                 responseText = getFallbackResponse(text, messageCount);
             }
 
+            // Extract <suggestions> array from responseText
+            let cleanResponse = responseText;
+            const suggestionsMatch = responseText.match(/<suggestions>(.*?)<\/suggestions>/is);
+            if (suggestionsMatch) {
+                try {
+                    const parsed = JSON.parse(suggestionsMatch[1]) as string[];
+                    const newReplies = parsed.map((optionText, i) => ({
+                        id: `sug-${Date.now()}-${i}`,
+                        label: optionText.length > 30 ? optionText.substring(0, 30) + '...' : optionText,
+                        value: optionText
+                    }));
+                    setDynamicReplies(newReplies);
+                    cleanResponse = responseText.replace(/<suggestions>[\s\S]*?<\/suggestions>/gi, '').trim();
+                } catch (e) {
+                    console.error("Failed to parse suggestions JSON", e);
+                    setDynamicReplies([]);
+                }
+            } else {
+                setDynamicReplies([]);
+            }
+
             const aiMessage: ChatMessage = {
                 id: (Date.now() + 1).toString(),
-                content: responseText,
+                content: cleanResponse,
                 sender: 'ai',
                 timestamp: new Date(),
             };
 
             onMessagesChange([...messages, userMessage, aiMessage]);
-            setProgress(prev => Math.min(prev + 8, 88));
+            setProgress(prev => Math.min(prev + 12, 95));
 
             // Note: Report readiness is now triggered by AI via offerStrategicReport tool call
             // No automatic completion based on message count (fixes Section B3)
@@ -223,10 +226,21 @@ export function ChatScreen({
         handleSend(reply.value);
     };
 
-    const handleGenerateReport = () => {
-        const report = generateStrategicReport(conversationState, userLocation);
-        if (onGenerateReport) {
-            onGenerateReport(report);
+    const handleGenerateReport = async () => {
+        if (isGenerating) return;
+        setIsGenerating(true);
+        try {
+            const { generateLiveStrategicReport } = await import('../utils/geminiService');
+            const profileContext = userProfile || { countries: [userLocation] };
+            const report = await generateLiveStrategicReport(messages, profileContext);
+            if (onGenerateReport) {
+                onGenerateReport(report);
+            }
+        } catch (err) {
+            console.error("Failed to generate strategic report", err);
+            setError('Failed to generate report. Please try again.');
+        } finally {
+            setIsGenerating(false);
         }
     };
 
@@ -364,10 +378,20 @@ export function ChatScreen({
                         >
                             <button
                                 onClick={handleGenerateReport}
-                                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-full font-semibold shadow-lg hover:shadow-xl transition-all"
+                                disabled={isGenerating}
+                                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-full font-semibold shadow-lg hover:shadow-xl transition-all disabled:opacity-50"
                             >
-                                <FileText className="w-5 h-5" />
-                                Generate Strategy Report
+                                {isGenerating ? (
+                                    <>
+                                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                        Generating Report...
+                                    </>
+                                ) : (
+                                    <>
+                                        <FileText className="w-5 h-5" />
+                                        Generate Strategy Report
+                                    </>
+                                )}
                             </button>
                         </motion.div>
                     )}
@@ -376,10 +400,10 @@ export function ChatScreen({
             </div>
 
             {/* Quick replies - positioned above input */}
-            {!isAiTyping && messages.length > 0 && messages.length < 3 && !isReportReady && (
+            {!isAiTyping && dynamicReplies.length > 0 && !isReportReady && (
                 <div className="fixed bottom-36 left-0 right-0 px-4 z-20">
                     <QuickReplyChips
-                        options={quickReplies}
+                        options={dynamicReplies}
                         onSelect={handleQuickReply}
                     />
                 </div>
